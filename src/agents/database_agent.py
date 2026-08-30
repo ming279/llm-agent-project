@@ -3,11 +3,15 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 import mysql.connector
 from mysql.connector import Error
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from config.settings import DB_CONFIG
 
 
 class DatabaseAgent:
     def __init__(self):
-        from config.settings import DB_CONFIG
         self.db_config = DB_CONFIG
         self._connection = None
 

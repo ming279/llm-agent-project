@@ -56,7 +56,7 @@ class ScreenshotTool(BaseTool):
         edge_options.add_argument('--headless=new')
         edge_options.add_argument('--disable-gpu')
         edge_options.add_argument('--no-sandbox')
-        edge_options.add_argument('--window-size=2560,1440')
+        edge_options.add_argument('--window-size=3840,2160')
         edge_options.add_argument('--force-device-scale-factor=1.5')
         edge_options.add_argument('--high-dpi-support=1')
         edge_options.add_argument('--enable-features=VaapiVideoDecoder')

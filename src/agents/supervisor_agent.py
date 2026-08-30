@@ -193,9 +193,18 @@ JSON格式输出："""
             import json
             data = json.loads(response.content)
             return data
-        except:
+        except Exception as e:
+            error_msg = str(e)
+            print(f"LLM提取失败: {error_msg}")
+            if "free tier" in error_msg.lower() or "exhausted" in error_msg.lower():
+                return {
+                    "title": "API额度用尽",
+                    "main_content": f"错误信息: {error_msg}\n\n请登录阿里云DashScope控制台关闭'仅使用免费额度'模式。",
+                    "key_points": [],
+                    "sentiment": "neutral"
+                }
             return {
-                "title": "提取失败",
+                "title": f"提取失败: {error_msg[:50]}",
                 "main_content": content[:200],
                 "key_points": [],
                 "sentiment": "neutral"

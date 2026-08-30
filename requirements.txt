@@ -1,10 +1,24 @@
+# 核心框架
 streamlit
 langchain-core
+
+# Web相关
 selenium
 webdriver-manager
-pytesseract
-Pillow
 beautifulsoup4
 requests
+
+# 数据库
 mysql-connector-python
+
+# 图像处理
+Pillow
+pytesseract
+
+# 数据处理
+pandas
+openpyxl
 pydantic
+
+# AI服务
+dashscope

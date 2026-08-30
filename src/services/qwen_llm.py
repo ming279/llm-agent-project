@@ -1,4 +1,5 @@
 import os
+import time
 from typing import List, Optional, Any, Dict
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -9,11 +10,13 @@ from dashscope import Generation
 
 
 class QwenChatModel(BaseChatModel):
-    model: str = Field(default="qwen-turbo")
+    model: str = Field(default="qwen-turbo-latest")
     temperature: float = Field(default=0.7)
     top_p: float = Field(default=0.8)
     max_tokens: int = Field(default=2000)
     api_key: Optional[str] = Field(default=None)
+    max_retries: int = Field(default=3)
+    retry_delay: float = Field(default=2.0)
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -40,25 +43,47 @@ class QwenChatModel(BaseChatModel):
             else:
                 dashscope_messages.append({"role": "assistant", "content": msg.content})
 
-        try:
-            response = Generation.call(
-                model=Generation.Models.qwen_turbo,
-                messages=dashscope_messages,
-                temperature=self.temperature,
-                top_p=self.top_p,
-                result_format="message",
-            )
-
-            if response.status_code == 200:
-                content = response.output.choices[0].message.content
-                chat_generation = ChatGeneration(
-                    message=HumanMessage(content=content)
+        last_error = None
+        for attempt in range(self.max_retries):
+            try:
+                response = Generation.call(
+                    model="qwen-turbo-latest",
+                    messages=dashscope_messages,
+                    temperature=self.temperature,
+                    top_p=self.top_p,
+                    result_format="message",
                 )
-                return ChatResult(generations=[chat_generation])
+
+                if response.status_code == 200:
+                    content = response.output.choices[0].message.content
+                    chat_generation = ChatGeneration(
+                        message=HumanMessage(content=content)
+                    )
+                    return ChatResult(generations=[chat_generation])
+                else:
+                    last_error = Exception(f"API error: {response.message}")
+                    
+            except Exception as e:
+                last_error = e
+            
+            # 如果是限流错误，增加重试延迟
+            if "rate limit" in str(last_error).lower():
+                delay = self.retry_delay * (attempt + 1) * 2
             else:
-                raise Exception(f"API error: {response.message}")
-        except Exception as e:
-            raise e
+                delay = self.retry_delay * (attempt + 1)
+            
+            if attempt < self.max_retries - 1:
+                time.sleep(delay)
+        
+        if last_error:
+            error_msg = str(last_error)
+            if "rate limit" in error_msg.lower():
+                error_msg = f"API限流: {error_msg}，请稍后再试或联系管理员调整API配额"
+            elif "API key" in error_msg.lower():
+                error_msg = f"API密钥错误: {error_msg}，请检查环境变量DASHSCOPE_API_KEY"
+            elif "unauthorized" in error_msg.lower():
+                error_msg = f"认证失败: {error_msg}，请检查API密钥是否正确"
+            raise Exception(error_msg)
 
     async def _agenerate(
         self,
@@ -70,7 +95,7 @@ class QwenChatModel(BaseChatModel):
 
 
 def get_qwen_model(
-    model: str = "qwen-turbo",
+    model: str = "qwen-turbo-latest",
     temperature: float = 0.7,
     max_tokens: int = 2000
 ) -> QwenChatModel:

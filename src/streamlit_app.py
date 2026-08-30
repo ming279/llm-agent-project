@@ -6,6 +6,9 @@ import hashlib
 import json
 from datetime import datetime
 import base64
+import concurrent.futures
+import pandas as pd
+from io import StringIO, BytesIO
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -20,6 +23,137 @@ from agents.supervisor_agent import (
 from agents.database_agent import DatabaseAgent
 from tools.web_tools import WebScraperTool
 from tools.screenshot_tools import ScreenshotTool, ScreenshotAnalyzerTool
+
+
+def export_to_csv(records):
+    """导出历史记录为CSV格式"""
+    df = pd.DataFrame(records)
+    
+    # 处理列表字段
+    df['key_points'] = df['key_points'].apply(lambda x: '; '.join(x) if isinstance(x, list) else '')
+    df['keywords'] = df['keywords'].apply(lambda x: '; '.join(x) if isinstance(x, list) else '')
+    
+    # 处理时间字段，在前面加英文单引号强制Excel按文本显示，避免自动按日期解析导致显示####
+    if 'time' in df.columns:
+        df['time'] = df['time'].apply(lambda x: f"'{x}" if x else '')
+    
+    # 选择要导出的列
+    export_cols = ['time', 'title', 'main_content', 'key_points', 'keywords', 'change_analysis', 'status', 'images_count']
+    
+    # 如果有website字段，也添加进去
+    if 'website' in df.columns:
+        export_cols.insert(0, 'website')
+    
+    for col in export_cols:
+        if col not in df.columns:
+            df[col] = ''
+    
+    csv_buffer = StringIO()
+    # 使用utf-8-sig确保Excel正确识别UTF-8编码，避免中文乱码
+    df[export_cols].to_csv(csv_buffer, index=False, encoding='utf-8-sig')
+    return csv_buffer.getvalue()
+
+
+def export_to_excel(records):
+    """导出历史记录为Excel格式"""
+    df = pd.DataFrame(records)
+    
+    # 处理列表字段
+    df['key_points'] = df['key_points'].apply(lambda x: '; '.join(x) if isinstance(x, list) else '')
+    df['keywords'] = df['keywords'].apply(lambda x: '; '.join(x) if isinstance(x, list) else '')
+    
+    # 处理时间字段，在前面加英文单引号强制Excel按文本显示，避免自动按日期解析导致显示####
+    if 'time' in df.columns:
+        df['time'] = df['time'].apply(lambda x: f"'{x}" if x else '')
+    
+    # 限制字段长度，避免内容过长导致显示问题
+    max_lengths = {
+        'title': 200,
+        'main_content': 1000,
+        'key_points': 500,
+        'keywords': 300,
+        'change_analysis': 1000
+    }
+    for col, max_len in max_lengths.items():
+        if col in df.columns:
+            df[col] = df[col].apply(lambda x: str(x)[:max_len] + '...' if len(str(x)) > max_len else x)
+    
+    # 选择要导出的列
+    export_cols = ['time', 'title', 'main_content', 'key_points', 'keywords', 'change_analysis', 'status', 'images_count']
+    
+    # 如果有website字段，也添加进去
+    if 'website' in df.columns:
+        export_cols.insert(0, 'website')
+    
+    for col in export_cols:
+        if col not in df.columns:
+            df[col] = ''
+    
+    excel_buffer = BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+        df[export_cols].to_excel(writer, index=False, sheet_name='历史记录')
+        
+        # 获取工作表
+        worksheet = writer.sheets['历史记录']
+        
+        # 设置列宽，确保内容完全显示
+        column_widths = [
+            25,   # website
+            20,   # time
+            35,   # title
+            50,   # main_content
+            40,   # key_points
+            30,   # keywords
+            50,   # change_analysis
+            12,   # status
+            12    # images_count
+        ]
+        
+        # 根据实际列数调整
+        num_cols = len(export_cols)
+        for i in range(num_cols):
+            col_letter = chr(ord('A') + i)
+            worksheet.column_dimensions[col_letter].width = column_widths[i] if i < len(column_widths) else 20
+        
+        # 设置单元格样式：自动换行、垂直居中、调整行高
+        from openpyxl.styles import Alignment, PatternFill, Font, Border, Side
+        
+        # 表头样式
+        header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
+        header_font = Font(bold=True, color='FFFFFF')
+        header_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        
+        # 内容样式
+        content_alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+        
+        # 边框样式
+        thin_border = Border(left=Side(style='thin'), 
+                            right=Side(style='thin'), 
+                            top=Side(style='thin'), 
+                            bottom=Side(style='thin'))
+        
+        # 应用表头样式
+        for col in range(1, len(export_cols) + 1):
+            cell = worksheet.cell(row=1, column=col)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = header_alignment
+            cell.border = thin_border
+        
+        # 应用内容样式
+        for row in range(2, len(df) + 2):
+            for col in range(1, len(export_cols) + 1):
+                cell = worksheet.cell(row=row, column=col)
+                cell.alignment = content_alignment
+                cell.border = thin_border
+        
+        # 设置行高
+        worksheet.row_dimensions[1].height = 25  # 表头行高
+        for row in range(2, len(df) + 2):
+            worksheet.row_dimensions[row].height = 15  # 内容行高
+    
+    excel_buffer.seek(0)
+    return excel_buffer.getvalue()
 
 
 def init_agents():
@@ -76,6 +210,7 @@ def check_website_change():
         screenshot_analysis = ""
 
         if st.session_state.use_screenshot:
+            # 1. 截图
             screenshot_start = time.time()
             screenshot_result = st.session_state.screenshot_tool._run(
                 st.session_state.target_url,
@@ -86,59 +221,105 @@ def check_website_change():
             if screenshot_result.startswith("截图失败") or screenshot_result.startswith("截图功能不可用"):
                 st.session_state.status = f"截图失败: {screenshot_result}"
                 return
-            else:
-                screenshot_base64 = screenshot_result
-                ocr_start = time.time()
-                screenshot_analysis = st.session_state.screenshot_analyzer._run(screenshot_base64)
-                timings['ocr'] = time.time() - ocr_start
-                content = screenshot_analysis.replace("识别文字:\n", "")
-                images = []
+            
+            screenshot_base64 = screenshot_result
+            
+            # 2. 立即计算图片哈希，判断是否有变化
+            current_image_hash = hashlib.md5(base64.b64decode(screenshot_base64)).hexdigest()
+            is_first_check = st.session_state.last_hash is None
+            image_changed = False
+            if not is_first_check and st.session_state.last_image_hash:
+                image_changed = current_image_hash != st.session_state.last_image_hash
+            
+            # 3. 如果是首次检查或图片有变化，才继续处理
+            if not is_first_check and not image_changed:
+                st.session_state.status = "网站内容无变化"
+                st.session_state.last_change = "none"
+                st.session_state.last_check_duration = time.time() - start_time
+                return
+            
+            # 4. 并行处理OCR识别
+            ocr_start = time.time()
+            screenshot_analysis = st.session_state.screenshot_analyzer._run(screenshot_base64)
+            timings['ocr'] = time.time() - ocr_start
+            content = screenshot_analysis.replace("识别文字:\n", "")
+            images = []
         else:
+            # 普通网页抓取模式
             scraper = WebScraperTool()
             result_str = scraper._run(st.session_state.target_url)
             result = json.loads(result_str)
             content = result.get('text', '')
             images = result.get('images', [])
+            
+            if not content or content.startswith("抓取失败"):
+                st.session_state.status = f"获取网页内容失败: {content}"
+                return
+            
+            current_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
+            is_first_check = st.session_state.last_hash is None
+            
+            if not is_first_check and current_hash == st.session_state.last_hash:
+                st.session_state.status = "网站内容无变化"
+                st.session_state.last_change = "none"
+                st.session_state.last_check_duration = time.time() - start_time
+                return
+            
+            current_image_hash = None
 
-        if not content or content.startswith("抓取失败"):
-            st.session_state.status = f"获取网页内容失败: {content}"
-            return
-
-        current_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
-        
-        current_image_hash = None
-        if screenshot_base64:
-            current_image_hash = hashlib.md5(base64.b64decode(screenshot_base64)).hexdigest()
-
-        is_first_check = st.session_state.last_hash is None
+        # 此时内容肯定有变化（或首次检查），继续处理
+        if st.session_state.use_screenshot:
+            # 对于截图模式，重新计算内容哈希
+            current_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
+        else:
+            current_image_hash = None
         
         if is_first_check:
             st.session_state.status = "首次检测完成"
             st.session_state.last_change = "first"
         else:
-            content_changed = current_hash != st.session_state.last_hash
-            image_changed = False
-            if st.session_state.use_screenshot and current_image_hash and st.session_state.last_image_hash:
-                image_changed = current_image_hash != st.session_state.last_image_hash
-            
-            if content_changed or image_changed:
-                st.session_state.status = "检测到网站变化！"
-                st.session_state.last_change = "changed"
-                if image_changed and not content_changed:
-                    st.session_state.status += " (图片变化)"
-            else:
-                st.session_state.status = "网站内容无变化"
-                st.session_state.last_change = "none"
-                st.session_state.last_check_duration = time.time() - start_time
-                return
-
+            st.session_state.status = "检测到网站变化！"
+            st.session_state.last_change = "changed"
+            if st.session_state.use_screenshot and st.session_state.last_image_hash and current_image_hash:
+                st.session_state.status += " (图片变化)"
+        
+        # 5. 并行处理LLM提取和关键词生成
         llm_start = time.time()
         cache_key = f"extraction_{current_hash}"
-        if cache_key in st.session_state:
-            extracted_data = st.session_state[cache_key]
-        else:
-            extracted_data = st.session_state.extractor.extract_structured_data(content)
-            st.session_state[cache_key] = extracted_data
+        keyword_key = f"keywords_{current_hash}"
+        
+        extracted_data = None
+        keywords = None
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            # 并行启动两个任务
+            future_extract = None
+            future_keywords = None
+            
+            if cache_key in st.session_state:
+                extracted_data = st.session_state[cache_key]
+            else:
+                future_extract = executor.submit(
+                    st.session_state.extractor.extract_structured_data,
+                    content
+                )
+            
+            if keyword_key in st.session_state:
+                keywords = st.session_state[keyword_key]
+            else:
+                future_keywords = executor.submit(
+                    st.session_state.supervisor._generate_keywords,
+                    content
+                )
+            
+            # 获取结果
+            if future_extract:
+                extracted_data = future_extract.result()
+                st.session_state[cache_key] = extracted_data
+            if future_keywords:
+                keywords = future_keywords.result()
+                st.session_state[keyword_key] = keywords
+        
         timings['llm_extract'] = time.time() - llm_start
 
         old_data = None
@@ -163,13 +344,6 @@ def check_website_change():
                         content
                     )
                     st.session_state[analysis_key] = change_analysis
-
-        keyword_key = f"keywords_{current_hash}"
-        if keyword_key in st.session_state:
-            keywords = st.session_state[keyword_key]
-        else:
-            keywords = st.session_state.supervisor._generate_keywords(content)
-            st.session_state[keyword_key] = keywords
 
         ocr_results = []
         if st.session_state.use_screenshot and screenshot_analysis:
@@ -219,11 +393,9 @@ def check_website_change():
         if url not in st.session_state.history_records:
             st.session_state.history_records[url] = []
         
-        existing_times = {rec['time'] for rec in st.session_state.history_records[url]}
-        if record['time'] not in existing_times:
-            st.session_state.history_records[url].insert(0, record)
-            if len(st.session_state.history_records[url]) > 50:
-                st.session_state.history_records[url].pop()
+        st.session_state.history_records[url].insert(0, record)
+        if len(st.session_state.history_records[url]) > 50:
+            st.session_state.history_records[url].pop()
 
         st.session_state.last_hash = current_hash
         st.session_state.last_content = content
@@ -337,7 +509,7 @@ def main():
         st.session_state.use_screenshot = screenshot_enabled
         
         if screenshot_enabled:
-            st.markdown("<p style='color: #f59e0b; font-size: 14px;'>⚠️ 截图模式需要安装 Microsoft Edge 浏览器</p>", unsafe_allow_html=True)
+            st.markdown("<p style='color: #f59e0b; font-size: 14px;'>⚠️ 截图模式需要安装浏览器驱动，识别时间增加</p>", unsafe_allow_html=True)
             
             full_page_enabled = st.toggle(
                 "📄 长截图模式",
@@ -417,8 +589,17 @@ def main():
     st.markdown("---")
 
     if st.session_state.monitoring and not st.session_state.paused:
-        with st.spinner("正在检测网站变化..."):
-            check_website_change()
+        import time
+        
+        current_time = time.time()
+        last_run = st.session_state.get('last_run_time', 0)
+        interval = st.session_state.monitor_interval
+        
+        if current_time - last_run >= interval:
+            with st.spinner("正在检测网站变化..."):
+                check_website_change()
+            st.session_state.last_run_time = time.time()
+            st.rerun()
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("###  网站变化状态")
@@ -554,17 +735,74 @@ def main():
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("### 📚 历史记录")
         
-        col_clear, col_view = st.columns([1, 3])
-        with col_clear:
-            if st.button("🗑️ 清空历史记录", type="secondary", use_container_width=True):
+        # 简化布局：清空按钮和导出按钮放在同一行
+        col_actions = st.columns([1, 2, 1, 1, 3])
+        with col_actions[0]:
+            if st.button("🗑️ 清空", type="secondary", use_container_width=True, help="清空所有历史记录"):
                 st.session_state.history_records = {}
                 st.rerun()
-        with col_view:
+        
+        with col_actions[1]:
+            # 导出范围选择器
+            export_options = ["📊 全部记录"] + [f"🌐 {url[:30]}..." for url in list(st.session_state.history_records.keys())]
+            selected_export = st.selectbox(
+                "导出范围",
+                options=export_options,
+                key="export_range",
+                label_visibility="collapsed",
+                help="选择要导出的记录范围"
+            )
+        
+        # 准备导出数据
+        export_records = []
+        file_suffix = "all"
+        
+        if selected_export == "📊 全部记录":
+            for url, records in st.session_state.history_records.items():
+                for rec in records:
+                    rec_export = rec.copy()
+                    rec_export['website'] = url
+                    export_records.append(rec_export)
+        else:
+            # 提取选中的网站URL
+            selected_url = list(st.session_state.history_records.keys())[export_options.index(selected_export) - 1]
+            for rec in st.session_state.history_records[selected_url]:
+                rec_export = rec.copy()
+                rec_export['website'] = selected_url
+                export_records.append(rec_export)
+            file_suffix = "single"
+        
+        with col_actions[2]:
+            if export_records:
+                csv_data = export_to_csv(export_records)
+                st.download_button(
+                    label="📥 导出 CSV",
+                    data=csv_data,
+                    file_name=f"website_monitor_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file_suffix}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    help="导出选中范围的历史记录为CSV格式"
+                )
+        
+        with col_actions[3]:
+            if export_records:
+                excel_data = export_to_excel(export_records)
+                st.download_button(
+                    label="📥 导出 Excel",
+                    data=excel_data,
+                    file_name=f"website_monitor_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file_suffix}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    help="导出选中范围的历史记录为Excel格式"
+                )
+        
+        with col_actions[4]:
             view_mode = st.radio(
                 "查看模式",
                 ["按网站分类", "全部记录时间线"],
                 key="history_view_mode",
-                horizontal=True
+                horizontal=True,
+                label_visibility="collapsed"
             )
         
         if view_mode == "按网站分类":
@@ -586,33 +824,14 @@ def main():
                         if rec.get('images_count'):
                             st.markdown(f"**图片数量:** {rec['images_count']}")
                         
+                        # 只有在expander展开时才显示截图，避免不必要的处理
                         if rec.get('screenshot_base64') or rec.get('has_screenshot'):
                             st.markdown("**截图预览:**")
                             try:
-                                from PIL import Image
-                                from io import BytesIO
-                                
-                                image_data = base64.b64decode(rec['screenshot_base64'])
-                                img = Image.open(BytesIO(image_data))
-                                
-                                max_width = 1200
-                                if img.width > max_width:
-                                    ratio = max_width / img.width
-                                    new_height = int(img.height * ratio)
-                                    img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
-                                
-                                if img.mode in ('RGBA', 'LA'):
-                                    background = Image.new('RGB', img.size, (255, 255, 255))
-                                    background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else img.split()[1])
-                                    img = background
-                                elif img.mode != 'RGB':
-                                    img = img.convert('RGB')
-                                
-                                output_buffer = BytesIO()
-                                img.save(output_buffer, format='JPEG', quality=85, optimize=True)
-                                output_buffer.seek(0)
-                                
-                                st.image(output_buffer.getvalue(), caption=f"网站截图 - {rec['time']}", width=600, use_container_width=True)
+                                # 直接显示base64图片，不做处理，提高性能
+                                st.image(f"data:image/jpeg;base64,{rec['screenshot_base64']}", 
+                                        caption=f"网站截图 - {rec['time']}", 
+                                        use_container_width=True)
                             except Exception as e:
                                 st.markdown(f"图片显示失败: {str(e)}")
                                 if rec.get('has_screenshot'):
@@ -626,36 +845,34 @@ def main():
                                 st.markdown("*⚠️ 所有图片都是SVG格式，暂不支持显示*")
                             else:
                                 cols = st.columns(3)
-                                for i, img_url in enumerate(valid_images[:6]):
+                                for i, img_url in enumerate(valid_images[:3]):  # 减少显示数量
                                     with cols[i % 3]:
                                         try:
-                                            st.markdown(f"🖼️ 图片 {i+1}")
                                             st.image(img_url, caption=f"图片 {i+1}", width=200)
                                         except Exception as e:
                                             st.markdown(f"❌ 图片 {i+1} 加载失败")
                         
                         if rec.get('ocr_results') and len(rec['ocr_results']) > 0:
                             st.markdown("**OCR识别结果:**")
-                            for ocr_result in rec['ocr_results']:
-                                if isinstance(ocr_result, dict):
-                                    idx = ocr_result.get('index', '未知')
-                                    text = ocr_result.get('text', '')
-                                    if text and not text.startswith("截图中未识别"):
-                                        lines = text.replace("识别文字:\n", "").split('\n')
-                                        for line in lines[:20]:
-                                            if line.strip():
-                                                st.markdown(f"- {line.strip()}")
-                                    else:
-                                        st.markdown(f"- {text if text else '未识别到文字'}")
+                            ocr_result = rec['ocr_results'][0] if isinstance(rec['ocr_results'], list) else rec['ocr_results']
+                            if isinstance(ocr_result, dict):
+                                text = ocr_result.get('text', '')
+                                if text and not text.startswith("截图中未识别"):
+                                    lines = text.replace("识别文字:\n", "").split('\n')
+                                    for line in lines[:10]:  # 减少显示行数
+                                        if line.strip():
+                                            st.markdown(f"- {line.strip()}")
                                 else:
-                                    text = str(ocr_result)
-                                    if text and not text.startswith("截图中未识别"):
-                                        lines = text.replace("识别文字:\n", "").split('\n')
-                                        for line in lines[:20]:
-                                            if line.strip():
-                                                st.markdown(f"- {line.strip()}")
-                                    else:
-                                        st.markdown(f"- {text}")
+                                    st.markdown(f"- {text if text else '未识别到文字'}")
+                            else:
+                                text = str(ocr_result)
+                                if text and not text.startswith("截图中未识别"):
+                                    lines = text.replace("识别文字:\n", "").split('\n')
+                                    for line in lines[:10]:
+                                        if line.strip():
+                                            st.markdown(f"- {line.strip()}")
+                                else:
+                                    st.markdown(f"- {text}")
                         
                         if rec.get('change_analysis'):
                             st.markdown(f"**变化分析:** {rec['change_analysis'][:200]}")
@@ -679,33 +896,13 @@ def main():
                     if rec.get('images_count'):
                         st.markdown(f"**图片数量:** {rec['images_count']}")
                     
+                    # 直接显示base64图片，不做处理，提高性能
                     if rec.get('screenshot_base64') or rec.get('has_screenshot'):
                         st.markdown("**截图预览:**")
                         try:
-                            from PIL import Image
-                            from io import BytesIO
-                            
-                            image_data = base64.b64decode(rec['screenshot_base64'])
-                            img = Image.open(BytesIO(image_data))
-                            
-                            max_width = 1200
-                            if img.width > max_width:
-                                ratio = max_width / img.width
-                                new_height = int(img.height * ratio)
-                                img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
-                            
-                            if img.mode in ('RGBA', 'LA'):
-                                background = Image.new('RGB', img.size, (255, 255, 255))
-                                background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else img.split()[1])
-                                img = background
-                            elif img.mode != 'RGB':
-                                img = img.convert('RGB')
-                            
-                            output_buffer = BytesIO()
-                            img.save(output_buffer, format='JPEG', quality=85, optimize=True)
-                            output_buffer.seek(0)
-                            
-                            st.image(output_buffer.getvalue(), caption=f"网站截图 - {rec['time']}", width=600, use_container_width=True)
+                            st.image(f"data:image/jpeg;base64,{rec['screenshot_base64']}", 
+                                    caption=f"网站截图 - {rec['time']}", 
+                                    use_container_width=True)
                         except Exception as e:
                             st.markdown(f"图片显示失败: {str(e)}")
                             if rec.get('has_screenshot'):
@@ -719,36 +916,34 @@ def main():
                             st.markdown("*⚠️ 所有图片都是SVG格式，暂不支持显示*")
                         else:
                             cols = st.columns(3)
-                            for i, img_url in enumerate(valid_images[:6]):
+                            for i, img_url in enumerate(valid_images[:3]):  # 减少显示数量
                                     with cols[i % 3]:
                                         try:
-                                            st.markdown(f"🖼️ 图片 {i+1}")
                                             st.image(img_url, caption=f"图片 {i+1}", width=200)
                                         except Exception as e:
                                             st.markdown(f"❌ 图片 {i+1} 加载失败")
                     
                     if rec.get('ocr_results') and len(rec['ocr_results']) > 0:
                         st.markdown("**OCR识别结果:**")
-                        for ocr_result in rec['ocr_results']:
-                            if isinstance(ocr_result, dict):
-                                idx = ocr_result.get('index', '未知')
-                                text = ocr_result.get('text', '')
-                                if text and not text.startswith("截图中未识别"):
-                                    lines = text.replace("识别文字:\n", "").split('\n')
-                                    for line in lines[:20]:
-                                        if line.strip():
-                                            st.markdown(f"- {line.strip()}")
-                                else:
-                                    st.markdown(f"- {text if text else '未识别到文字'}")
+                        ocr_result = rec['ocr_results'][0] if isinstance(rec['ocr_results'], list) else rec['ocr_results']
+                        if isinstance(ocr_result, dict):
+                            text = ocr_result.get('text', '')
+                            if text and not text.startswith("截图中未识别"):
+                                lines = text.replace("识别文字:\n", "").split('\n')
+                                for line in lines[:10]:  # 减少显示行数
+                                    if line.strip():
+                                        st.markdown(f"- {line.strip()}")
                             else:
-                                text = str(ocr_result)
-                                if text and not text.startswith("截图中未识别"):
-                                    lines = text.replace("识别文字:\n", "").split('\n')
-                                    for line in lines[:20]:
-                                        if line.strip():
-                                            st.markdown(f"- {line.strip()}")
-                                else:
-                                    st.markdown(f"- {text}")
+                                st.markdown(f"- {text if text else '未识别到文字'}")
+                        else:
+                            text = str(ocr_result)
+                            if text and not text.startswith("截图中未识别"):
+                                lines = text.replace("识别文字:\n", "").split('\n')
+                                for line in lines[:10]:
+                                    if line.strip():
+                                        st.markdown(f"- {line.strip()}")
+                            else:
+                                st.markdown(f"- {text}")
                     
                     if rec.get('change_analysis'):
                         st.markdown(f"**变化分析:** {rec['change_analysis'][:200]}")
@@ -758,14 +953,7 @@ def main():
         st.markdown('</div>', unsafe_allow_html=True)
 
     if st.session_state.monitoring and not st.session_state.paused:
-        duration = st.session_state.get('last_check_duration', 0)
-        interval = st.session_state.monitor_interval
-        
-        if duration >= interval:
-            st.rerun()
-        else:
-            time.sleep(interval - duration)
-            st.rerun()
+        st.rerun()
 
 
 if __name__ == "__main__":
